@@ -49,6 +49,20 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    groups = models.ManyToManyField(
+        'auth.Group',
+        related_name='sophia_users',  # <-- ADICIONAR
+        related_query_name='sophia_user',
+        blank=True
+    )
+
+    user_permissions = models.ManyToManyField(
+        'auth.Permission',
+        related_name='sophia_users',  # <-- ADICIONAR
+        related_query_name='sophia_user',
+        blank=True
+    )
+
     class Meta:
         db_table = 'users'
         verbose_name = 'Usuário'

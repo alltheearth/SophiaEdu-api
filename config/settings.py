@@ -35,6 +35,11 @@ INSTALLED_APPS = [
     # Apps locais
     'sophia',
 ]
+
+# =========================
+# CUSTOM USER MODEL
+# =========================
+AUTH_USER_MODEL = 'sophia.User'
 # =========================
 # MIDDLEWARE
 # =========================
