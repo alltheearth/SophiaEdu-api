@@ -1,15 +1,18 @@
-# models.py (simplificado)
-
+from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.utils import timezone
+from django.core.exceptions import ValidationError
 import uuid
-
+import secrets
+import string
 
 # ============= CORE =============
-
 class User(AbstractUser):
-    """Usuário base do sistema"""
+    """Usuário base do sistema com autenticação segura"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
     role = models.CharField(max_length=20, choices=[
         ('SUPERUSER', 'Super Usuário'),
         ('GESTOR', 'Gestor'),
@@ -18,48 +21,285 @@ class User(AbstractUser):
         ('RESPONSAVEL', 'Responsável'),
         ('ALUNO', 'Aluno'),
     ])
-    foto = models.URLField(blank=True, null=True)  # Supabase Storage URL
+
+    # Dados pessoais
+    cpf = models.CharField(max_length=14, unique=True, null=True, blank=True)
+    foto = models.URLField(blank=True, null=True)
     telefone = models.CharField(max_length=15, blank=True)
+
+    # Controle de acesso
     ativo = models.BooleanField(default=True)
+    email_verificado = models.BooleanField(default=False)
+    primeiro_acesso = models.BooleanField(default=True)
+    senha_temporaria = models.BooleanField(default=False)
+
+    # Segurança
+    tentativas_login_falhas = models.IntegerField(default=0)
+    bloqueado_ate = models.DateTimeField(null=True, blank=True)
+    ultimo_login_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    # Auditoria
+    criado_por = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='usuarios_criados'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'users'
+        verbose_name = 'Usuário'
+        verbose_name_plural = 'Usuários'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.get_full_name()} ({self.get_role_display()})"
+
+    def esta_bloqueado(self):
+        """Verifica se usuário está bloqueado por tentativas"""
+        if self.bloqueado_ate and self.bloqueado_ate > timezone.now():
+            return True
+        return False
+
+    def registrar_tentativa_falha(self):
+        """Registra tentativa de login falha"""
+        self.tentativas_login_falhas += 1
+
+        # Bloqueia após 5 tentativas por 30 minutos
+        if self.tentativas_login_falhas >= 5:
+            self.bloqueado_ate = timezone.now() + timezone.timedelta(minutes=30)
+
+        self.save()
+
+    def resetar_tentativas(self):
+        """Reseta contador de tentativas após login bem-sucedido"""
+        self.tentativas_login_falhas = 0
+        self.bloqueado_ate = None
+        self.save()
+
+    def gerar_senha_temporaria(self):
+        """Gera senha temporária segura de 12 caracteres"""
+        alphabet = string.ascii_letters + string.digits + "!@#$%&*"
+        senha = ''.join(secrets.choice(alphabet) for i in range(12))
+        return senha
+
+    def pode_criar_usuario(self, role_novo_usuario):
+        """Verifica se usuário tem permissão para criar outro usuário"""
+        hierarquia = {
+            'SUPERUSER': ['GESTOR', 'COORDENADOR', 'PROFESSOR', 'RESPONSAVEL'],
+            'GESTOR': ['COORDENADOR', 'PROFESSOR', 'RESPONSAVEL'],
+            'COORDENADOR': ['PROFESSOR'],
+            'PROFESSOR': [],
+            'RESPONSAVEL': [],
+            'ALUNO': []
+        }
+
+        return role_novo_usuario in hierarquia.get(self.role, [])
+
+
+class TokenRedefinicaoSenha(models.Model):
+    """Token para redefinição de senha"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tokens_senha')
+    token = models.CharField(max_length=100, unique=True)
+    usado = models.BooleanField(default=False)
+    expira_em = models.DateTimeField()
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'tokens_redefinicao_senha'
+        ordering = ['-criado_em']
+
+    def __str__(self):
+        return f"Token para {self.usuario.email}"
+
+    @staticmethod
+    def gerar_token():
+        """Gera token único de 32 caracteres"""
+        return secrets.token_urlsafe(32)
+
+    def esta_valido(self):
+        """Verifica se token ainda é válido"""
+        if self.usado:
+            return False
+        if self.expira_em < timezone.now():
+            return False
+        return True
+
+    def marcar_como_usado(self):
+        """Marca token como usado"""
+        self.usado = True
+        self.save()
+
+
+class HistoricoLogin(models.Model):
+    """Histórico de logins para auditoria"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE, related_name='historico_logins')
+
+    sucesso = models.BooleanField()
+    ip_address = models.GenericIPAddressField()
+    user_agent = models.TextField()
+
+    # Dados de localização (opcional)
+    cidade = models.CharField(max_length=100, blank=True)
+    estado = models.CharField(max_length=100, blank=True)
+    pais = models.CharField(max_length=100, blank=True)
+
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'historico_logins'
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['usuario', '-timestamp']),
+            models.Index(fields=['ip_address']),
+        ]
+
+    def __str__(self):
+        status = "✓" if self.sucesso else "✗"
+        return f"{status} {self.usuario.email} - {self.timestamp}"
+
+
+class SessaoUsuario(models.Model):
+    """Sessões ativas dos usuários"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sessoes')
+
+    token = models.CharField(max_length=500, unique=True)
+    ip_address = models.GenericIPAddressField()
+    user_agent = models.TextField()
+
+    ativo = models.BooleanField(default=True)
+    ultimo_acesso = models.DateTimeField(auto_now=True)
+    criado_em = models.DateTimeField(auto_now_add=True)
+    expira_em = models.DateTimeField()
+
+    class Meta:
+        db_table = 'sessoes_usuarios'
+        ordering = ['-criado_em']
+
+    def __str__(self):
+        return f"Sessão de {self.usuario.email}"
+
+    def esta_ativo(self):
+        """Verifica se sessão ainda está ativa"""
+        if not self.ativo:
+            return False
+        if self.expira_em < timezone.now():
+            self.ativo = False
+            self.save()
+            return False
+        return True
+
+    def renovar(self):
+        """Renova expiração da sessão"""
+        self.expira_em = timezone.now() + timezone.timedelta(hours=8)
+        self.save()
+
+
+class Professor(models.Model):
+    """Perfil de Professor"""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.OneToOneField(User, on_delete=models.CASCADE, related_name='professor_profile')
+    escola = models.ForeignKey('Escola', on_delete=models.CASCADE, related_name='professores')
+
+    # Dados profissionais
+    registro_profissional = models.CharField(max_length=50, blank=True)
+    formacao = models.CharField(max_length=200)
+    especializacao = models.CharField(max_length=200, blank=True)
+
+    # Dados contratuais
+    data_admissao = models.DateField()
+    carga_horaria = models.IntegerField(default=40)
+    turno = models.CharField(max_length=20, choices=[
+        ('MATUTINO', 'Matutino'),
+        ('VESPERTINO', 'Vespertino'),
+        ('NOTURNO', 'Noturno'),
+        ('INTEGRAL', 'Integral'),
+    ])
+    salario = models.DecimalField(max_digits=10, decimal_places=2)
+
+    status = models.CharField(max_length=20, choices=[
+        ('ATIVO', 'Ativo'),
+        ('FERIAS', 'Férias'),
+        ('LICENCA', 'Licença'),
+        ('AFASTADO', 'Afastado'),
+    ], default='ATIVO')
+
+    class Meta:
+        db_table = 'professores'
+        verbose_name = 'Professor'
+        verbose_name_plural = 'Professores'
+
+    def __str__(self):
+        return f"Prof. {self.usuario.get_full_name()}"
 
 
 class Escola(models.Model):
     """Escola - Tenant principal"""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     nome = models.CharField(max_length=200)
     cnpj = models.CharField(max_length=18, unique=True)
+
+    # Contato
     endereco = models.TextField()
     telefone = models.CharField(max_length=15)
     email = models.EmailField()
+
+    # Branding
     logo = models.URLField(blank=True, null=True)
+
+    # Status
     ativo = models.BooleanField(default=True)
-    plano = models.CharField(max_length=20, default='BASIC')  # BASIC, PRO, ENTERPRISE
-    created_at = models.DateTimeField(auto_now_add=True)
+    plano = models.CharField(max_length=20, default='BASIC')
 
     # Configurações Asaas
     asaas_api_key = models.CharField(max_length=200, blank=True)
     asaas_wallet_id = models.CharField(max_length=100, blank=True)
 
+    # Configurações de Segurança
+    exigir_2fa = models.BooleanField(default=False)
+    tempo_sessao_horas = models.IntegerField(default=8)
+    max_tentativas_login = models.IntegerField(default=5)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         db_table = 'escolas'
+        verbose_name = 'Escola'
         verbose_name_plural = 'Escolas'
+
+    def __str__(self):
+        return self.nome
 
 
 class EscolaUsuario(models.Model):
     """Relacionamento Many-to-Many entre Escola e Usuário"""
-    escola = models.ForeignKey(Escola, on_delete=models.CASCADE, related_name='usuarios')
+
+    escola = models.ForeignKey(Escola, on_delete=models.CASCADE, related_name='usuarios_vinculados')
     usuario = models.ForeignKey(User, on_delete=models.CASCADE, related_name='escolas')
-    role_na_escola = models.CharField(max_length=20)  # Pode ter roles diferentes em escolas diferentes
+    role_na_escola = models.CharField(max_length=20)
+
+    ativo = models.BooleanField(default=True)
+    data_vinculo = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'escola_usuarios'
         unique_together = ['escola', 'usuario']
+        verbose_name = 'Vínculo Escola-Usuário'
+        verbose_name_plural = 'Vínculos Escola-Usuário'
 
+    def __str__(self):
+        return f"{self.usuario.get_full_name()} - {self.escola.nome}"
 
 # ============= ACADÊMICO =============
 
@@ -91,6 +331,13 @@ class Turma(models.Model):
     ])
     capacidade_maxima = models.IntegerField(default=30)
     coordenador = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='turmas_coordenadas')
+    sala = models.CharField(max_length=20)
+    professor_titular = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='turmas_tituladas'
+    )
 
     class Meta:
         db_table = 'turmas'
@@ -128,6 +375,7 @@ class Aluno(models.Model):
     matricula = models.CharField(max_length=50, unique=True)
     data_nascimento = models.DateField()
     turma_atual = models.ForeignKey(Turma, on_delete=models.SET_NULL, null=True, related_name='alunos')
+    turno = models.CharField(max_length=20, choices=[...], blank=True)
 
     # Dados pessoais
     cpf = models.CharField(max_length=14, blank=True)
@@ -144,7 +392,6 @@ class Aluno(models.Model):
 
     class Meta:
         db_table = 'alunos'
-
 
 class Responsavel(models.Model):
     """Responsáveis/Pais"""
@@ -235,6 +482,19 @@ class Mensalidade(models.Model):
     valor = models.DecimalField(max_digits=10, decimal_places=2)
     desconto = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     valor_final = models.DecimalField(max_digits=10, decimal_places=2)
+    forma_pagamento = models.CharField(max_length=20, choices=[
+        ('BOLETO', 'Boleto'),
+        ('PIX', 'PIX'),
+        ('CARTAO', 'Cartão de Crédito'),
+        ('DINHEIRO', 'Dinheiro'),
+    ], blank=True)
+
+    @property
+    def dias_atraso(self):
+        if self.status == 'ATRASADO' and not self.data_pagamento:
+            from django.utils import timezone
+            return (timezone.now().date() - self.data_vencimento).days
+        return 0
 
     data_vencimento = models.DateField()
     data_pagamento = models.DateField(null=True, blank=True)
@@ -321,3 +581,35 @@ class AtividadeAgenda(models.Model):
 
     class Meta:
         db_table = 'atividades_agenda'
+
+
+class Evento(models.Model):
+    escola = models.ForeignKey(Escola, on_delete=models.CASCADE, related_name='eventos')
+
+    titulo = models.CharField(max_length=200)
+    tipo = models.CharField(max_length=20, choices=[
+        ('REUNIAO', 'Reunião'),
+        ('PROVA', 'Prova'),
+        ('EVENTO', 'Evento'),
+        ('FERIADO', 'Feriado'),
+        ('ADMINISTRATIVO', 'Administrativo'),
+        ('CULTURAL', 'Cultural'),
+        ('ESPORTIVO', 'Esportivo'),
+    ])
+
+    data = models.DateField()
+    hora_inicio = models.TimeField()
+    hora_fim = models.TimeField()
+    local = models.CharField(max_length=200)
+    descricao = models.TextField()
+
+    turmas = models.ManyToManyField(Turma, blank=True, related_name='eventos')
+    responsavel = models.ForeignKey(User, on_delete=models.CASCADE)
+    participantes = models.IntegerField(default=0)
+
+    status = models.CharField(max_length=20, choices=[
+        ('AGENDADO', 'Agendado'),
+        ('CONFIRMADO', 'Confirmado'),
+        ('CANCELADO', 'Cancelado'),
+        ('REALIZADO', 'Realizado'),
+    ], default='AGENDADO')
