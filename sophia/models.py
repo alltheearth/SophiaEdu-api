@@ -375,7 +375,12 @@ class Aluno(models.Model):
     matricula = models.CharField(max_length=50, unique=True)
     data_nascimento = models.DateField()
     turma_atual = models.ForeignKey(Turma, on_delete=models.SET_NULL, null=True, related_name='alunos')
-    turno = models.CharField(max_length=20, choices=[...], blank=True)
+    turno = models.CharField(max_length=20, choices=[
+        ('MATUTINO', 'Matutino'),
+        ('VESPERTINO', 'Vespertino'),
+        ('NOTURNO', 'Noturno'),
+        ('INTEGRAL', 'Integral'),
+    ], blank=True)
 
     # Dados pessoais
     cpf = models.CharField(max_length=14, blank=True)
@@ -582,8 +587,9 @@ class AtividadeAgenda(models.Model):
     class Meta:
         db_table = 'atividades_agenda'
 
-
 class Evento(models.Model):
+    """Eventos do calendário escolar"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     escola = models.ForeignKey(Escola, on_delete=models.CASCADE, related_name='eventos')
 
     titulo = models.CharField(max_length=200)
@@ -604,7 +610,7 @@ class Evento(models.Model):
     descricao = models.TextField()
 
     turmas = models.ManyToManyField(Turma, blank=True, related_name='eventos')
-    responsavel = models.ForeignKey(User, on_delete=models.CASCADE)
+    responsavel = models.ForeignKey(User, on_delete=models.CASCADE, related_name='eventos_responsavel')
     participantes = models.IntegerField(default=0)
 
     status = models.CharField(max_length=20, choices=[
@@ -613,3 +619,15 @@ class Evento(models.Model):
         ('CANCELADO', 'Cancelado'),
         ('REALIZADO', 'Realizado'),
     ], default='AGENDADO')
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'eventos'
+        ordering = ['-data', '-hora_inicio']
+        verbose_name = 'Evento'
+        verbose_name_plural = 'Eventos'
+
+    def __str__(self):
+        return f"{self.titulo} - {self.data}"

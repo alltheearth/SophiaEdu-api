@@ -30,11 +30,11 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
+    'django_filters',
 
     # Apps locais
     'sophia',
 ]
-
 # =========================
 # MIDDLEWARE
 # =========================
@@ -177,3 +177,17 @@ LOGGING = {
         'level': 'DEBUG',
     },
 }
+
+
+# =========================
+# ASAAS INTEGRATION
+# =========================
+ASAAS_API_URL = config('ASAAS_API_URL', default='https://api.asaas.com/v3')
+ASAAS_ENVIRONMENT = config('ASAAS_ENVIRONMENT', default='sandbox')  # ou 'production'
+
+# =========================
+# SUPABASE STORAGE
+# =========================
+SUPABASE_URL = config('SUPABASE_URL', default='')
+SUPABASE_KEY = config('SUPABASE_KEY', default='')
+SUPABASE_STORAGE_BUCKET = config('SUPABASE_STORAGE_BUCKET', default='uploads')
