@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+
+  # Aplicação Django
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: eleveia_web
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120 --reload
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DEBUG=${DEBUG:-True}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - DB_NAME=${DB_NAME:-postgres}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST:-db}
+      - DB_PORT=${DB_PORT:-5432}
+
+    networks:
+      - eleveia_network
+    restart: unless-stopped
+
+  # Nginx (opcional) para servir arquivos estáticos em produção
+  nginx:
+    image: nginx:alpine
+    container_name: eleveia_nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - static_volume:/app/staticfiles:ro
+      - media_volume:/app/media:ro
+    ports:
+      - "80:80"
+
+    networks:
+      - eleveia_network
+    profiles: ["production"]
+
+volumes:
+  postgres_data:
+  static_volume:
+  media_volume:
+
+networks:
+  eleveia_network:
+    driver: bridge
