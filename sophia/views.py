@@ -238,9 +238,7 @@ class AnoLetivoViewSet(viewsets.ModelViewSet):
 
 class TurmaViewSet(viewsets.ModelViewSet):
     """CRUD de Turmas"""
-    queryset = Turma.objects.select_related(
-        'escola', 'ano_letivo', 'coordenador', 'professor_titular'
-    ).all()
+    queryset = Turma.objects.all()
     serializer_class = TurmaSerializer
     permission_classes = [IsCoordenadorOrAbove]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -276,7 +274,7 @@ class DisciplinaViewSet(viewsets.ModelViewSet):
 
 class ProfessorViewSet(viewsets.ModelViewSet):
     """CRUD de Professores"""
-    queryset = Professor.objects.select_related('usuario', 'escola').all()
+    queryset = Professor.objects.all()
     serializer_class = ProfessorSerializer
     permission_classes = [IsGestorOrAbove]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -292,9 +290,7 @@ class ProfessorViewSet(viewsets.ModelViewSet):
 
 class AlunoViewSet(viewsets.ModelViewSet):
     """CRUD de Alunos"""
-    queryset = Aluno.objects.select_related(
-        'usuario', 'escola', 'turma_atual'
-    ).prefetch_related('responsaveis').all()
+    queryset = Aluno.objects.all()
     serializer_class = AlunoSerializer
     permission_classes = [IsProfessorOrAbove]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]

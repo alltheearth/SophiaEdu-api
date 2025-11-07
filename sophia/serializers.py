@@ -21,8 +21,25 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['role'] = user.role
         token['nome'] = user.get_full_name()
         token['foto'] = user.foto
-        escolas = user.escolas.values_list('escola_id', flat=True)
-        token['escolas'] = list(escolas)
+
+        # Buscar escolas do usuário
+        vinculos = user.escolas.filter(ativo=True)
+        escolas = [
+            {
+                'id': str(v.escola_id),
+                'nome': v.escola.nome,
+                'logo': v.escola.logo,
+                'role': v.role_na_escola
+            }
+            for v in vinculos.select_related('escola')
+        ]
+
+        token['escolas'] = escolas
+
+        # Escola ativa (primeira ou última usada)
+        if escolas:
+            token['escola_ativa_id'] = escolas[0]['id']
+
         return token
 
 
@@ -341,3 +358,4 @@ class DashboardSerializer(serializers.Serializer):
     total_turmas = serializers.IntegerField()
     mensalidades_pendentes = serializers.DictField()
     mensalidades_atrasadas = serializers.DictField()
+
