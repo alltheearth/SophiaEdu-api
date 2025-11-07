@@ -203,8 +203,29 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == 'SUPERUSER':
             return self.queryset
-        escolas = user.escolas.all()
-        return self.queryset.filter(escolas__in=escolas)
+        escolas = user.escolas.values_list('escola_id', flat=True)
+        return self.queryset.filter(escolas__escola_id__in=escolas)
+
+    def retrieve(self, request, *args, **kwargs):
+        """Retorna usuário com suas escolas vinculadas"""
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+        
+        # Adiciona escolas do usuário
+        vinculos = instance.escolas.filter(ativo=True).select_related('escola')
+        data['escolas'] = [
+            {
+                'id': str(v.escola.id),
+                'nome': v.escola.nome,
+                'logo': v.escola.logo,
+                'cnpj': v.escola.cnpj,
+                'role': v.role_na_escola
+            }
+            for v in vinculos
+        ]
+        
+        return Response(data)
 
     @action(detail=True, methods=['post'])
     def resetar_senha(self, request, pk=None):
@@ -220,7 +241,6 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             'message': 'Senha resetada',
             'senha_temporaria': nova_senha
         })
-
 
 # ============================================
 # VIEWSETS - ACADÊMICO
