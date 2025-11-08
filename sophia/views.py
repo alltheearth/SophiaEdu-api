@@ -38,6 +38,12 @@ from .permissions import (
 # Imports dos serviços
 from .services.asaas_service import AsaasService
 
+# Imports dos filtros customizados
+from .filters import (
+    TurmaFilter, AlunoFilter, NotaFilter,
+    FrequenciaFilter, MensalidadeFilter
+)
+
 
 # ============================================
 # FUNÇÕES DE AUTENTICAÇÃO
