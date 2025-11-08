@@ -203,15 +203,17 @@ class UsuarioViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == 'SUPERUSER':
             return self.queryset
-        escolas = user.escolas.values_list('escola_id', flat=True)
-        return self.queryset.filter(escolas__escola_id__in=escolas)
+
+        # ✅ CORRIGIDO: Pegar IDs das escolas
+        escola_ids = user.escolas.values_list('escola_id', flat=True)
+        return self.queryset.filter(escolas__escola_id__in=escola_ids).distinct()
 
     def retrieve(self, request, *args, **kwargs):
         """Retorna usuário com suas escolas vinculadas"""
         instance = self.get_object()
         serializer = self.get_serializer(instance)
         data = serializer.data
-        
+
         # Adiciona escolas do usuário
         vinculos = instance.escolas.filter(ativo=True).select_related('escola')
         data['escolas'] = [
@@ -224,7 +226,7 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             }
             for v in vinculos
         ]
-        
+
         return Response(data)
 
     @action(detail=True, methods=['post'])
@@ -241,6 +243,7 @@ class UsuarioViewSet(viewsets.ModelViewSet):
             'message': 'Senha resetada',
             'senha_temporaria': nova_senha
         })
+
 
 # ============================================
 # VIEWSETS - ACADÊMICO
@@ -270,8 +273,10 @@ class TurmaViewSet(viewsets.ModelViewSet):
         user = self.request.user
         if user.role == 'SUPERUSER':
             return self.queryset
-        escolas = user.escolas.all()
-        return self.queryset.filter(escola__in=escolas)
+
+        # ✅ CORRIGIDO: Pegar IDs das escolas
+        escola_ids = user.escolas.values_list('escola_id', flat=True)
+        return self.queryset.filter(escola_id__in=escola_ids)
 
     @action(detail=True, methods=['get'])
     def alunos(self, request, pk=None):
@@ -324,14 +329,19 @@ class AlunoViewSet(viewsets.ModelViewSet):
 
         if user.role == 'SUPERUSER':
             return queryset
+
         if user.role in ['GESTOR', 'COORDENADOR']:
-            escolas = user.escolas.all()
-            return queryset.filter(escola__in=escolas)
+            # ✅ CORRIGIDO: Pegar IDs das escolas
+            escola_ids = user.escolas.values_list('escola_id', flat=True)
+            return queryset.filter(escola_id__in=escola_ids)
+
         if user.role == 'PROFESSOR':
             turmas = user.disciplinas_lecionadas.values_list('turma', flat=True)
             return queryset.filter(turma_atual__in=turmas)
+
         if user.role == 'RESPONSAVEL':
             return user.responsavel_profile.alunos.all()
+
         return queryset.none()
 
     def get_serializer_class(self):
@@ -395,16 +405,21 @@ class NotaViewSet(viewsets.ModelViewSet):
 
         if user.role == 'SUPERUSER':
             return queryset
+
         if user.role == 'GESTOR':
-            escolas = user.escolas.all()
-            return queryset.filter(aluno__escola__in=escolas)
+            escola_ids = user.escolas.values_list('escola_id', flat=True)
+            return queryset.filter(aluno__escola_id__in=escola_ids)
+
         if user.role == 'COORDENADOR':
             return queryset.filter(aluno__turma_atual__coordenador=user)
+
         if user.role == 'PROFESSOR':
             return queryset.filter(turma_disciplina__professor=user)
+
         if user.role == 'RESPONSAVEL':
             alunos = user.responsavel_profile.alunos.all()
             return queryset.filter(aluno__in=alunos)
+
         return queryset.none()
 
     @action(detail=False, methods=['get'])
@@ -504,8 +519,8 @@ class MensalidadeViewSet(viewsets.ModelViewSet):
         if user.role == 'SUPERUSER':
             return self.queryset
         if user.role == 'GESTOR':
-            escolas = user.escolas.all()
-            return self.queryset.filter(aluno__escola__in=escolas)
+            escola_ids = user.escolas.values_list('escola_id', flat=True)
+            return self.queryset.filter(aluno__escola_id__in=escola_ids)
         if user.role == 'RESPONSAVEL':
             return self.queryset.filter(responsavel_financeiro=user.responsavel_profile)
         return self.queryset.none()

@@ -183,12 +183,14 @@ class ResponsavelSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
     def get_alunos(self, obj):
+        # ✅ CORRETO: Acessar através do modelo intermediário AlunoResponsavel
+        vinculos = AlunoResponsavel.objects.filter(responsavel=obj).select_related('aluno__usuario')
         return [{
-            'id': str(ar.aluno.id),
-            'nome': ar.aluno.usuario.get_full_name(),
-            'matricula': ar.aluno.matricula,
-            'responsavel_financeiro': ar.responsavel_financeiro
-        } for ar in obj.alunos.through.objects.filter(responsavel=obj)]
+            'id': str(vinculo.aluno.id),
+            'nome': vinculo.aluno.usuario.get_full_name(),
+            'matricula': vinculo.aluno.matricula,
+            'responsavel_financeiro': vinculo.responsavel_financeiro
+        } for vinculo in vinculos]
 
 
 class AlunoListSerializer(serializers.ModelSerializer):
@@ -206,14 +208,16 @@ class AlunoListSerializer(serializers.ModelSerializer):
         ]
 
     def get_responsaveis(self, obj):
+        # ✅ CORRETO: Acessar através do modelo intermediário AlunoResponsavel
+        vinculos = AlunoResponsavel.objects.filter(aluno=obj).select_related('responsavel__usuario')
         return [{
-            'id': str(ar.responsavel.id),
-            'nome': ar.responsavel.usuario.get_full_name(),
-            'parentesco': ar.responsavel.parentesco,
-            'telefone': ar.responsavel.usuario.telefone,
-            'email': ar.responsavel.usuario.email,
-            'responsavel_financeiro': ar.responsavel_financeiro
-        } for ar in obj.responsaveis.through.objects.filter(aluno=obj).select_related('responsavel__usuario')]
+            'id': str(vinculo.responsavel.id),
+            'nome': vinculo.responsavel.usuario.get_full_name(),
+            'parentesco': vinculo.responsavel.parentesco,
+            'telefone': vinculo.responsavel.usuario.telefone,
+            'email': vinculo.responsavel.usuario.email,
+            'responsavel_financeiro': vinculo.responsavel_financeiro
+        } for vinculo in vinculos]
 
 
 class AlunoSerializer(serializers.ModelSerializer):
@@ -358,4 +362,3 @@ class DashboardSerializer(serializers.Serializer):
     total_turmas = serializers.IntegerField()
     mensalidades_pendentes = serializers.DictField()
     mensalidades_atrasadas = serializers.DictField()
-
