@@ -645,3 +645,465 @@ class Evento(models.Model):
 
     def __str__(self):
         return f"{self.titulo} - {self.data}"
+
+
+# sophia/models.py - ADICIONAR AO ARQUIVO EXISTENTE
+
+from django.db import models
+import uuid
+from django.utils import timezone
+
+
+# ============= SISTEMA DE COMUNICAÇÃO AVANÇADO =============
+
+class CanalComunicacao(models.Model):
+    """
+    Canal de comunicação (1-1 ou Grupo)
+    Implementa hierarquia de acesso e visibilidade
+    """
+    TIPO_CHOICES = [
+        ('INDIVIDUAL', 'Individual'),
+        ('GRUPO_TURMA', 'Grupo de Turma'),
+        ('GRUPO_DISCIPLINA', 'Grupo de Disciplina'),
+        ('GRUPO_PROJETO', 'Grupo de Projeto'),
+        ('OFICIAL', 'Canal Oficial')  # Direção/Coordenação
+    ]
+
+    STATUS_CHOICES = [
+        ('ATIVO', 'Ativo'),
+        ('ARQUIVADO', 'Arquivado'),
+        ('BLOQUEADO', 'Bloqueado')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    escola = models.ForeignKey('Escola', on_delete=models.CASCADE, related_name='canais')
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    nome = models.CharField(max_length=200, blank=True)  # Para grupos
+    descricao = models.TextField(blank=True)
+
+    # Relacionamentos
+    turma = models.ForeignKey('Turma', on_delete=models.SET_NULL, null=True, blank=True, related_name='canais')
+    disciplina = models.ForeignKey('Disciplina', on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='canais')
+
+    # Criador e administradores
+    criado_por = models.ForeignKey('User', on_delete=models.CASCADE, related_name='canais_criados')
+    administradores = models.ManyToManyField('User', related_name='canais_administrados', blank=True)
+
+    # Controle de acesso e visibilidade
+    visivel_para_gestao = models.BooleanField(default=True)  # Gestor sempre vê
+    visivel_para_coordenacao = models.BooleanField(default=True)  # Coordenador pode ver
+    permite_anexos = models.BooleanField(default=True)
+    permite_entrega_trabalhos = models.BooleanField(default=False)
+
+    # Metadados
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ATIVO')
+    fixado = models.BooleanField(default=False)
+    silenciado_por = models.ManyToManyField('User', related_name='canais_silenciados', blank=True)
+
+    # Auditoria
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+    ultima_mensagem_em = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'canais_comunicacao'
+        ordering = ['-fixado', '-ultima_mensagem_em']
+        verbose_name = 'Canal de Comunicação'
+        verbose_name_plural = 'Canais de Comunicação'
+
+    def __str__(self):
+        if self.tipo == 'INDIVIDUAL':
+            membros = self.participantes.select_related('usuario')[:2]
+            nomes = [m.usuario.get_full_name() for m in membros]
+            return f"Chat: {' - '.join(nomes)}"
+        return self.nome or f"Canal {self.tipo}"
+
+    def pode_visualizar(self, usuario):
+        """Verifica se usuário pode visualizar o canal"""
+        # Superuser e Gestor veem tudo
+        if usuario.role in ['SUPERUSER', 'GESTOR']:
+            return True
+
+        # Coordenador vê canais da sua coordenação
+        if usuario.role == 'COORDENADOR' and self.visivel_para_coordenacao:
+            if self.turma and self.turma.coordenador == usuario:
+                return True
+
+        # Participante direto
+        return self.participantes.filter(usuario=usuario).exists()
+
+    def pode_enviar_mensagem(self, usuario):
+        """Verifica se usuário pode enviar mensagem"""
+        if self.status == 'BLOQUEADO':
+            return False
+
+        # Administrador pode sempre enviar
+        if self.administradores.filter(id=usuario.id).exists():
+            return True
+
+        # Gestor/Coordenador podem intervir
+        if usuario.role in ['SUPERUSER', 'GESTOR', 'COORDENADOR']:
+            return self.pode_visualizar(usuario)
+
+        # Participante ativo
+        participante = self.participantes.filter(usuario=usuario).first()
+        return participante and participante.ativo
+
+    def marcar_como_lida(self, usuario):
+        """Marca todas as mensagens como lidas para o usuário"""
+        self.mensagens.filter(lida=False).exclude(remetente=usuario).update(
+            lida=True,
+            lida_em=timezone.now()
+        )
+
+    def obter_nao_lidas(self, usuario):
+        """Retorna quantidade de mensagens não lidas"""
+        return self.mensagens.filter(lida=False).exclude(remetente=usuario).count()
+
+
+class ParticipanteCanal(models.Model):
+    """
+    Participantes de um canal
+    """
+    PAPEL_CHOICES = [
+        ('MEMBRO', 'Membro'),
+        ('MODERADOR', 'Moderador'),
+        ('ADMIN', 'Administrador')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    canal = models.ForeignKey(CanalComunicacao, on_delete=models.CASCADE, related_name='participantes')
+    usuario = models.ForeignKey('User', on_delete=models.CASCADE, related_name='participacoes_canais')
+
+    papel = models.CharField(max_length=20, choices=PAPEL_CHOICES, default='MEMBRO')
+    ativo = models.BooleanField(default=True)
+    pode_enviar = models.BooleanField(default=True)
+    pode_ver_historico = models.BooleanField(default=True)
+
+    # Notificações
+    notificar = models.BooleanField(default=True)
+    notificar_email = models.BooleanField(default=False)
+    notificar_sms = models.BooleanField(default=False)
+
+    # Auditoria
+    adicionado_por = models.ForeignKey('User', on_delete=models.SET_NULL, null=True,
+                                       related_name='usuarios_adicionados')
+    adicionado_em = models.DateTimeField(auto_now_add=True)
+    ultima_visualizacao = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'participantes_canal'
+        unique_together = ['canal', 'usuario']
+        ordering = ['papel', 'usuario__first_name']
+
+    def __str__(self):
+        return f"{self.usuario.get_full_name()} - {self.canal}"
+
+
+class MensagemCanal(models.Model):
+    """
+    Mensagens dentro dos canais
+    """
+    TIPO_CHOICES = [
+        ('TEXTO', 'Texto'),
+        ('ARQUIVO', 'Arquivo'),
+        ('TRABALHO', 'Entrega de Trabalho'),
+        ('AVISO', 'Aviso'),
+        ('SISTEMA', 'Mensagem do Sistema')
+    ]
+
+    PRIORIDADE_CHOICES = [
+        ('BAIXA', 'Baixa'),
+        ('NORMAL', 'Normal'),
+        ('ALTA', 'Alta'),
+        ('URGENTE', 'Urgente')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    canal = models.ForeignKey(CanalComunicacao, on_delete=models.CASCADE, related_name='mensagens')
+    remetente = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, related_name='mensagens_canal_enviadas')
+
+    # Conteúdo
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES, default='TEXTO')
+    conteudo = models.TextField()
+    prioridade = models.CharField(max_length=20, choices=PRIORIDADE_CHOICES, default='NORMAL')
+
+    # Resposta/Thread
+    respondendo_a = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name='respostas')
+
+    # Controle
+    editada = models.BooleanField(default=False)
+    editada_em = models.DateTimeField(null=True, blank=True)
+    excluida = models.BooleanField(default=False)
+    excluida_em = models.DateTimeField(null=True, blank=True)
+
+    # Leitura
+    lida = models.BooleanField(default=False)
+    lida_em = models.DateTimeField(null=True, blank=True)
+    visualizacoes = models.IntegerField(default=0)
+
+    # Metadados
+    ip_remetente = models.GenericIPAddressField(null=True, blank=True)
+    enviada_em = models.DateTimeField(auto_now_add=True)
+
+    # Flags especiais
+    requer_confirmacao = models.BooleanField(default=False)
+    confirmada_por = models.ManyToManyField('User', related_name='mensagens_confirmadas', blank=True)
+
+    class Meta:
+        db_table = 'mensagens_canal'
+        ordering = ['enviada_em']
+        indexes = [
+            models.Index(fields=['canal', '-enviada_em']),
+            models.Index(fields=['remetente', '-enviada_em']),
+        ]
+
+    def __str__(self):
+        return f"{self.remetente.get_full_name()}: {self.conteudo[:50]}"
+
+    def marcar_como_lida(self, usuario):
+        """Marca mensagem como lida"""
+        if not self.lida and self.remetente != usuario:
+            self.lida = True
+            self.lida_em = timezone.now()
+            self.save()
+
+            # Atualiza visualizações
+            Visualizacao.objects.get_or_create(
+                mensagem=self,
+                usuario=usuario,
+                defaults={'visualizada_em': timezone.now()}
+            )
+
+    def pode_editar(self, usuario):
+        """Verifica se usuário pode editar"""
+        if self.remetente == usuario:
+            # Pode editar até 15 minutos após envio
+            return (timezone.now() - self.enviada_em).seconds < 900
+
+        # Admin do canal pode editar
+        return self.canal.administradores.filter(id=usuario.id).exists()
+
+    def pode_excluir(self, usuario):
+        """Verifica se usuário pode excluir"""
+        if self.remetente == usuario:
+            return True
+
+        # Admin, Gestor, Coordenador podem excluir
+        if usuario.role in ['SUPERUSER', 'GESTOR']:
+            return True
+
+        if usuario.role == 'COORDENADOR':
+            return self.canal.pode_visualizar(usuario)
+
+        return self.canal.administradores.filter(id=usuario.id).exists()
+
+
+class AnexoMensagem(models.Model):
+    """
+    Anexos das mensagens (arquivos, imagens, documentos)
+    """
+    TIPO_CHOICES = [
+        ('IMAGEM', 'Imagem'),
+        ('DOCUMENTO', 'Documento'),
+        ('VIDEO', 'Vídeo'),
+        ('AUDIO', 'Áudio'),
+        ('OUTRO', 'Outro')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    mensagem = models.ForeignKey(MensagemCanal, on_delete=models.CASCADE, related_name='anexos')
+
+    tipo = models.CharField(max_length=20, choices=TIPO_CHOICES)
+    nome_arquivo = models.CharField(max_length=255)
+    url = models.URLField()  # Supabase Storage
+    tamanho = models.BigIntegerField()  # bytes
+    mime_type = models.CharField(max_length=100)
+
+    # Se for trabalho
+    e_trabalho = models.BooleanField(default=False)
+    atividade = models.ForeignKey('AtividadeAgenda', on_delete=models.SET_NULL, null=True, blank=True)
+    nota_trabalho = models.DecimalField(max_digits=4, decimal_places=2, null=True, blank=True)
+    feedback_professor = models.TextField(blank=True)
+
+    # Metadados
+    enviado_em = models.DateTimeField(auto_now_add=True)
+    downloads = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = 'anexos_mensagem'
+        ordering = ['enviado_em']
+
+    def __str__(self):
+        return self.nome_arquivo
+
+
+class Visualizacao(models.Model):
+    """
+    Registro de visualizações de mensagens
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    mensagem = models.ForeignKey(MensagemCanal, on_delete=models.CASCADE, related_name='visualizacoes_detalhadas')
+    usuario = models.ForeignKey('User', on_delete=models.CASCADE, related_name='mensagens_visualizadas')
+    visualizada_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'visualizacoes_mensagem'
+        unique_together = ['mensagem', 'usuario']
+        ordering = ['-visualizada_em']
+
+
+class ResponsavelConversa(models.Model):
+    """
+    Rastreamento de quem é responsável por responder uma conversa
+    Permite que coordenadores/gestores assumam conversas
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    canal = models.ForeignKey(CanalComunicacao, on_delete=models.CASCADE, related_name='responsaveis')
+
+    # Responsável original (professor, coordenador)
+    responsavel_original = models.ForeignKey('User', on_delete=models.CASCADE, related_name='conversas_originais')
+
+    # Quem assumiu a conversa (se houver)
+    assumida_por = models.ForeignKey('User', on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name='conversas_assumidas')
+    assumida_em = models.DateTimeField(null=True, blank=True)
+    motivo_assuncao = models.TextField(blank=True)
+
+    # Status
+    ativo = models.BooleanField(default=True)
+    devolvida = models.BooleanField(default=False)
+    devolvida_em = models.DateTimeField(null=True, blank=True)
+
+    # SLA (Service Level Agreement)
+    prazo_resposta = models.IntegerField(default=24, help_text="Horas para responder")
+    alertado = models.BooleanField(default=False)
+    atrasado = models.BooleanField(default=False)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+    atualizado_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'responsavel_conversa'
+        ordering = ['-criado_em']
+
+    def __str__(self):
+        if self.assumida_por:
+            return f"{self.canal} - Assumida por {self.assumida_por.get_full_name()}"
+        return f"{self.canal} - {self.responsavel_original.get_full_name()}"
+
+    def assumir(self, usuario, motivo=""):
+        """Permite que coordenador/gestor assuma a conversa"""
+        self.assumida_por = usuario
+        self.assumida_em = timezone.now()
+        self.motivo_assuncao = motivo
+        self.save()
+
+    def devolver(self):
+        """Devolve conversa ao responsável original"""
+        self.devolvida = True
+        self.devolvida_em = timezone.now()
+        self.assumida_por = None
+        self.save()
+
+    def esta_atrasado(self):
+        """Verifica se resposta está atrasada"""
+        if not self.canal.ultima_mensagem_em:
+            return False
+
+        tempo_decorrido = timezone.now() - self.canal.ultima_mensagem_em
+        return tempo_decorrido.total_seconds() / 3600 > self.prazo_resposta
+
+
+class NotificacaoComunicacao(models.Model):
+    """
+    Notificações de comunicação
+    """
+    TIPO_CHOICES = [
+        ('NOVA_MENSAGEM', 'Nova Mensagem'),
+        ('MENCAO', 'Menção'),
+        ('RESPOSTA', 'Resposta'),
+        ('TRABALHO_ENTREGUE', 'Trabalho Entregue'),
+        ('CONVERSA_ASSUMIDA', 'Conversa Assumida'),
+        ('SLA_ALERTA', 'Alerta de SLA'),
+        ('CANAL_CRIADO', 'Canal Criado')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey('User', on_delete=models.CASCADE, related_name='notificacoes_comunicacao')
+    tipo = models.CharField(max_length=30, choices=TIPO_CHOICES)
+
+    canal = models.ForeignKey(CanalComunicacao, on_delete=models.CASCADE, related_name='notificacoes')
+    mensagem = models.ForeignKey(MensagemCanal, on_delete=models.CASCADE, null=True, blank=True)
+
+    titulo = models.CharField(max_length=200)
+    conteudo = models.TextField()
+
+    lida = models.BooleanField(default=False)
+    lida_em = models.DateTimeField(null=True, blank=True)
+
+    enviada_por_email = models.BooleanField(default=False)
+    enviada_por_sms = models.BooleanField(default=False)
+
+    criada_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notificacoes_comunicacao'
+        ordering = ['-criada_em']
+        indexes = [
+            models.Index(fields=['usuario', 'lida', '-criada_em']),
+        ]
+
+    def __str__(self):
+        return f"{self.usuario.get_full_name()} - {self.get_tipo_display()}"
+
+    def marcar_como_lida(self):
+        """Marca notificação como lida"""
+        if not self.lida:
+            self.lida = True
+            self.lida_em = timezone.now()
+            self.save()
+
+
+class AuditoriaConversa(models.Model):
+    """
+    Auditoria completa de todas as ações em conversas
+    """
+    ACAO_CHOICES = [
+        ('MENSAGEM_ENVIADA', 'Mensagem Enviada'),
+        ('MENSAGEM_EDITADA', 'Mensagem Editada'),
+        ('MENSAGEM_EXCLUIDA', 'Mensagem Excluída'),
+        ('CANAL_CRIADO', 'Canal Criado'),
+        ('PARTICIPANTE_ADICIONADO', 'Participante Adicionado'),
+        ('PARTICIPANTE_REMOVIDO', 'Participante Removido'),
+        ('CONVERSA_ASSUMIDA', 'Conversa Assumida'),
+        ('CONVERSA_DEVOLVIDA', 'Conversa Devolvida'),
+        ('ARQUIVO_ENVIADO', 'Arquivo Enviado'),
+        ('TRABALHO_ENTREGUE', 'Trabalho Entregue')
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    usuario = models.ForeignKey('User', on_delete=models.SET_NULL, null=True)
+    acao = models.CharField(max_length=30, choices=ACAO_CHOICES)
+
+    canal = models.ForeignKey(CanalComunicacao, on_delete=models.CASCADE, related_name='auditorias')
+    mensagem = models.ForeignKey(MensagemCanal, on_delete=models.SET_NULL, null=True, blank=True)
+
+    detalhes = models.JSONField(default=dict)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+
+    criado_em = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'auditoria_conversa'
+        ordering = ['-criado_em']
+        indexes = [
+            models.Index(fields=['canal', '-criado_em']),
+            models.Index(fields=['usuario', '-criado_em']),
+        ]
+
+    def __str__(self):
+        return f"{self.usuario.get_full_name() if self.usuario else 'Sistema'} - {self.get_acao_display()}"

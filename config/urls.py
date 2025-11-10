@@ -48,6 +48,13 @@ from sophia.views import (
     DocumentoViewSet,
 )
 
+from sophia.views import (
+    CanalComunicacaoViewSet,
+    MensagemCanalViewSet,
+    NotificacaoComunicacaoViewSet,
+    AuditoriaConversaViewSet
+)
+
 from sophia.webhooks.asaas_webhook import asaas_webhook
 
 # ============================================
@@ -89,6 +96,11 @@ router.register(r'contatos', ContatoViewSet, basename='contato')
 router.register(r'faqs', FAQViewSet, basename='faq')
 router.register(r'documentos', DocumentoViewSet, basename='documento')
 
+router.register(r'canais', CanalComunicacaoViewSet, basename='canal')
+router.register(r'mensagens-canal', MensagemCanalViewSet, basename='mensagem-canal')
+router.register(r'notificacoes-comunicacao', NotificacaoComunicacaoViewSet, basename='notificacao-comunicacao')
+router.register(r'auditoria-conversa', AuditoriaConversaViewSet, basename='auditoria-conversa')
+
 # ============================================
 # URL PATTERNS
 # ============================================
@@ -121,3 +133,13 @@ if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
+# config/urls.py - ADICIONAR às URLs existentes
+
+from sophia.views import (
+    CanalComunicacaoViewSet,
+    MensagemCanalViewSet,
+    NotificacaoComunicacaoViewSet,
+    AuditoriaConversaViewSet
+)
+
+# No router existente, adicionar:

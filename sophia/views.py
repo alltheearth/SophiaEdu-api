@@ -856,3 +856,651 @@ class DocumentoViewSet(viewsets.ViewSet):
             }
         ]
         return Response({'success': True, 'documentos': documentos})
+
+
+# sophia/views.py - ADICIONAR AO ARQUIVO EXISTENTE
+
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q, Count, Prefetch
+from django.utils import timezone
+from django.db import transaction
+
+from .models import (
+    CanalComunicacao, ParticipanteCanal, MensagemCanal,
+    AnexoMensagem, ResponsavelConversa, NotificacaoComunicacao,
+    AuditoriaConversa
+)
+from .serializers import (
+    CanalComunicacaoSerializer, CanalComunicacaoListSerializer,
+    MensagemCanalSerializer, ParticipanteCanalSerializer,
+    ResponsavelConversaSerializer, NotificacaoComunicacaoSerializer,
+    AuditoriaConversaSerializer, CriarCanalSerializer,
+    EnviarMensagemSerializer, AdicionarParticipantesSerializer,
+    AssumirConversaSerializer
+)
+from .utils.supabase_storage import upload_file
+
+
+# ============================================
+# VIEWSETS - COMUNICAÇÃO
+# ============================================
+
+class CanalComunicacaoViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet para canais de comunicação
+    Implementa hierarquia de acesso e visibilidade
+    """
+    queryset = CanalComunicacao.objects.select_related(
+        'escola', 'criado_por', 'turma', 'disciplina'
+    ).prefetch_related(
+        'participantes__usuario',
+        'responsaveis'
+    ).all()
+    serializer_class = CanalComunicacaoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return CanalComunicacaoListSerializer
+        return CanalComunicacaoSerializer
+
+    def get_queryset(self):
+        """
+        Filtra canais baseado no papel do usuário
+        """
+        user = self.request.user
+        queryset = super().get_queryset()
+
+        # Superuser e Gestor veem tudo
+        if user.role in ['SUPERUSER', 'GESTOR']:
+            escola_id = self.request.query_params.get('escola')
+            if escola_id:
+                queryset = queryset.filter(escola_id=escola_id)
+            return queryset
+
+        # Coordenador vê canais visíveis para coordenação
+        if user.role == 'COORDENADOR':
+            # Canais das suas turmas + canais onde é participante
+            turmas_coordenadas = user.turmas_coordenadas.values_list('id', flat=True)
+            queryset = queryset.filter(
+                Q(visivel_para_coordenacao=True, turma__in=turmas_coordenadas) |
+                Q(participantes__usuario=user, participantes__ativo=True)
+            ).distinct()
+            return queryset
+
+        # Professor, Responsável, Aluno: apenas canais onde participa
+        return queryset.filter(
+            participantes__usuario=user,
+            participantes__ativo=True
+        ).distinct()
+
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        """Cria novo canal"""
+        serializer = CriarCanalSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Validações
+        if data['tipo'] == 'INDIVIDUAL' and len(data.get('participantes_ids', [])) != 1:
+            return Response({
+                'success': False,
+                'message': 'Canal individual deve ter exatamente 1 outro participante'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Verifica se já existe canal individual entre os usuários
+        if data['tipo'] == 'INDIVIDUAL':
+            outro_usuario_id = data['participantes_ids'][0]
+            canal_existente = CanalComunicacao.objects.filter(
+                tipo='INDIVIDUAL',
+                participantes__usuario=request.user
+            ).filter(
+                participantes__usuario_id=outro_usuario_id
+            ).first()
+
+            if canal_existente:
+                return Response({
+                    'success': True,
+                    'message': 'Canal já existe',
+                    'canal': CanalComunicacaoSerializer(canal_existente, context={'request': request}).data
+                })
+
+        # Criar canal
+        escola_id = request.data.get('escola') or request.user.escolas.first().escola_id
+
+        canal = CanalComunicacao.objects.create(
+            escola_id=escola_id,
+            tipo=data['tipo'],
+            nome=data.get('nome', ''),
+            descricao=data.get('descricao', ''),
+            turma_id=data.get('turma'),
+            disciplina_id=data.get('disciplina'),
+            criado_por=request.user,
+            visivel_para_coordenacao=data.get('visivel_para_coordenacao', True),
+            permite_anexos=data.get('permite_anexos', True),
+            permite_entrega_trabalhos=data.get('permite_entrega_trabalhos', False)
+        )
+
+        # Adicionar criador como admin
+        ParticipanteCanal.objects.create(
+            canal=canal,
+            usuario=request.user,
+            papel='ADMIN',
+            adicionado_por=request.user
+        )
+
+        # Adicionar outros participantes
+        for usuario_id in data.get('participantes_ids', []):
+            ParticipanteCanal.objects.create(
+                canal=canal,
+                usuario_id=usuario_id,
+                papel='MEMBRO',
+                adicionado_por=request.user
+            )
+
+        # Criar responsável se for canal com professor
+        if request.user.role == 'PROFESSOR' or any(
+                User.objects.get(id=uid).role == 'PROFESSOR'
+                for uid in data.get('participantes_ids', [])
+        ):
+            professor = request.user if request.user.role == 'PROFESSOR' else User.objects.get(
+                id__in=data.get('participantes_ids', []),
+                role='PROFESSOR'
+            )
+            ResponsavelConversa.objects.create(
+                canal=canal,
+                responsavel_original=professor
+            )
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='CANAL_CRIADO',
+            canal=canal,
+            detalhes={'tipo': data['tipo'], 'nome': data.get('nome')},
+            ip_address=self.get_client_ip(request)
+        )
+
+        return Response({
+            'success': True,
+            'canal': CanalComunicacaoSerializer(canal, context={'request': request}).data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def enviar_mensagem(self, request, pk=None):
+        """Envia mensagem no canal"""
+        canal = self.get_object()
+
+        # Verifica permissão
+        if not canal.pode_enviar_mensagem(request.user):
+            return Response({
+                'success': False,
+                'message': 'Você não tem permissão para enviar mensagens neste canal'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = EnviarMensagemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        # Criar mensagem
+        mensagem = MensagemCanal.objects.create(
+            canal=canal,
+            remetente=request.user,
+            tipo=data['tipo'],
+            conteudo=data['conteudo'],
+            prioridade=data.get('prioridade', 'NORMAL'),
+            respondendo_a_id=data.get('respondendo_a'),
+            requer_confirmacao=data.get('requer_confirmacao', False),
+            ip_remetente=self.get_client_ip(request)
+        )
+
+        # Processar anexos
+        anexos_data = data.get('anexos', [])
+        for anexo_data in anexos_data:
+            AnexoMensagem.objects.create(
+                mensagem=mensagem,
+                tipo=anexo_data['tipo'],
+                nome_arquivo=anexo_data['nome_arquivo'],
+                url=anexo_data['url'],
+                tamanho=anexo_data['tamanho'],
+                mime_type=anexo_data['mime_type'],
+                e_trabalho=anexo_data.get('e_trabalho', False),
+                atividade_id=anexo_data.get('atividade_id')
+            )
+
+        # Atualizar timestamp do canal
+        canal.ultima_mensagem_em = timezone.now()
+        canal.save()
+
+        # Criar notificações para participantes
+        participantes = canal.participantes.filter(ativo=True).exclude(usuario=request.user)
+        for participante in participantes:
+            if participante.notificar:
+                NotificacaoComunicacao.objects.create(
+                    usuario=participante.usuario,
+                    tipo='NOVA_MENSAGEM',
+                    canal=canal,
+                    mensagem=mensagem,
+                    titulo=f"Nova mensagem de {request.user.get_full_name()}",
+                    conteudo=data['conteudo'][:200]
+                )
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='MENSAGEM_ENVIADA',
+            canal=canal,
+            mensagem=mensagem,
+            detalhes={'tipo': data['tipo'], 'prioridade': data.get('prioridade')},
+            ip_address=self.get_client_ip(request)
+        )
+
+        return Response({
+            'success': True,
+            'mensagem': MensagemCanalSerializer(mensagem, context={'request': request}).data
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['get'])
+    def mensagens(self, request, pk=None):
+        """Lista mensagens do canal com paginação"""
+        canal = self.get_object()
+
+        # Verifica permissão
+        if not canal.pode_visualizar(request.user):
+            return Response({
+                'success': False,
+                'message': 'Você não tem permissão para visualizar este canal'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Paginação
+        pagina = int(request.query_params.get('pagina', 1))
+        por_pagina = int(request.query_params.get('por_pagina', 50))
+        inicio = (pagina - 1) * por_pagina
+        fim = inicio + por_pagina
+
+        mensagens = canal.mensagens.filter(excluida=False).select_related(
+            'remetente'
+        ).prefetch_related(
+            'anexos', 'respostas'
+        ).order_by('-enviada_em')[inicio:fim]
+
+        serializer = MensagemCanalSerializer(mensagens, many=True, context={'request': request})
+
+        # Marcar como lidas
+        canal.marcar_como_lida(request.user)
+
+        return Response({
+            'success': True,
+            'mensagens': serializer.data,
+            'pagina': pagina,
+            'por_pagina': por_pagina,
+            'total': canal.mensagens.filter(excluida=False).count()
+        })
+
+    @action(detail=True, methods=['post'])
+    def adicionar_participantes(self, request, pk=None):
+        """Adiciona participantes ao canal"""
+        canal = self.get_object()
+
+        # Apenas admin ou gestor/coordenador
+        if not (canal.administradores.filter(id=request.user.id).exists() or
+                request.user.role in ['SUPERUSER', 'GESTOR', 'COORDENADOR']):
+            return Response({
+                'success': False,
+                'message': 'Você não tem permissão para adicionar participantes'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = AdicionarParticipantesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        adicionados = []
+        for usuario_id in data['usuarios_ids']:
+            participante, created = ParticipanteCanal.objects.get_or_create(
+                canal=canal,
+                usuario_id=usuario_id,
+                defaults={
+                    'papel': data['papel'],
+                    'adicionado_por': request.user,
+                    'notificar': data['notificar']
+                }
+            )
+            if created:
+                adicionados.append(participante)
+
+                # Notificar novo participante
+                if data['notificar']:
+                    NotificacaoComunicacao.objects.create(
+                        usuario_id=usuario_id,
+                        tipo='CANAL_CRIADO',
+                        canal=canal,
+                        titulo=f"Você foi adicionado ao canal {canal.nome}",
+                        conteudo=f"Por {request.user.get_full_name()}"
+                    )
+
+                # Auditoria
+                AuditoriaConversa.objects.create(
+                    usuario=request.user,
+                    acao='PARTICIPANTE_ADICIONADO',
+                    canal=canal,
+                    detalhes={'usuario_adicionado_id': str(usuario_id)},
+                    ip_address=self.get_client_ip(request)
+                )
+
+        return Response({
+            'success': True,
+            'message': f'{len(adicionados)} participante(s) adicionado(s)',
+            'participantes': ParticipanteCanalSerializer(adicionados, many=True).data
+        })
+
+    @action(detail=True, methods=['post'])
+    def marcar_como_lida(self, request, pk=None):
+        """Marca todas as mensagens como lidas"""
+        canal = self.get_object()
+        canal.marcar_como_lida(request.user)
+
+        return Response({
+            'success': True,
+            'message': 'Mensagens marcadas como lidas'
+        })
+
+    @action(detail=True, methods=['post'])
+    def assumir_conversa(self, request, pk=None):
+        """Coordenador/Gestor assume responsabilidade pela conversa"""
+        canal = self.get_object()
+
+        # Apenas Coordenador ou Gestor
+        if request.user.role not in ['COORDENADOR', 'GESTOR', 'SUPERUSER']:
+            return Response({
+                'success': False,
+                'message': 'Apenas coordenadores e gestores podem assumir conversas'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = AssumirConversaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        responsavel = canal.responsaveis.filter(ativo=True).first()
+        if not responsavel:
+            return Response({
+                'success': False,
+                'message': 'Canal não possui responsável definido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        responsavel.assumir(request.user, serializer.validated_data.get('motivo', ''))
+
+        # Notificar responsável original
+        NotificacaoComunicacao.objects.create(
+            usuario=responsavel.responsavel_original,
+            tipo='CONVERSA_ASSUMIDA',
+            canal=canal,
+            titulo='Conversa assumida',
+            conteudo=f'{request.user.get_full_name()} assumiu a conversa'
+        )
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='CONVERSA_ASSUMIDA',
+            canal=canal,
+            detalhes={
+                'responsavel_original_id': str(responsavel.responsavel_original_id),
+                'motivo': serializer.validated_data.get('motivo', '')
+            },
+            ip_address=self.get_client_ip(request)
+        )
+
+        return Response({
+            'success': True,
+            'message': 'Conversa assumida com sucesso',
+            'responsavel': ResponsavelConversaSerializer(responsavel).data
+        })
+
+    @action(detail=True, methods=['post'])
+    def devolver_conversa(self, request, pk=None):
+        """Devolve conversa ao responsável original"""
+        canal = self.get_object()
+
+        responsavel = canal.responsaveis.filter(ativo=True, assumida_por=request.user).first()
+        if not responsavel:
+            return Response({
+                'success': False,
+                'message': 'Você não assumiu esta conversa'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        responsavel.devolver()
+
+        # Notificar responsável original
+        NotificacaoComunicacao.objects.create(
+            usuario=responsavel.responsavel_original,
+            tipo='CONVERSA_ASSUMIDA',  # Reutiliza tipo
+            canal=canal,
+            titulo='Conversa devolvida',
+            conteudo=f'{request.user.get_full_name()} devolveu a conversa'
+        )
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='CONVERSA_DEVOLVIDA',
+            canal=canal,
+            detalhes={'responsavel_original_id': str(responsavel.responsavel_original_id)},
+            ip_address=self.get_client_ip(request)
+        )
+
+        return Response({
+            'success': True,
+            'message': 'Conversa devolvida ao responsável original'
+        })
+
+    @action(detail=False, methods=['get'])
+    def meus_canais(self, request):
+        """Lista canais do usuário com estatísticas"""
+        canais = self.get_queryset().annotate(
+            total_nao_lidas=Count(
+                'mensagens',
+                filter=Q(mensagens__lida=False) & ~Q(mensagens__remetente=request.user)
+            )
+        )
+
+        # Filtros
+        tipo = request.query_params.get('tipo')
+        if tipo:
+            canais = canais.filter(tipo=tipo)
+
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            canais = canais.filter(status=status_filter)
+
+        serializer = self.get_serializer(canais, many=True)
+
+        return Response({
+            'success': True,
+            'canais': serializer.data,
+            'total': canais.count()
+        })
+
+    @action(detail=False, methods=['get'])
+    def conversas_pendentes(self, request):
+        """Lista conversas que precisam de resposta (para coordenadores/gestores)"""
+        if request.user.role not in ['COORDENADOR', 'GESTOR', 'SUPERUSER']:
+            return Response({
+                'success': False,
+                'message': 'Acesso negado'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Conversas com SLA vencido ou próximo
+        from datetime import timedelta
+        limite = timezone.now() - timedelta(hours=20)
+
+        canais_pendentes = self.get_queryset().filter(
+            responsaveis__atrasado=True
+        ).distinct()
+
+        serializer = CanalComunicacaoListSerializer(canais_pendentes, many=True, context={'request': request})
+
+        return Response({
+            'success': True,
+            'canais_pendentes': serializer.data,
+            'total': canais_pendentes.count()
+        })
+
+    def get_client_ip(self, request):
+        """Obtém IP do cliente"""
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+
+
+class MensagemCanalViewSet(viewsets.ModelViewSet):
+    """ViewSet para mensagens"""
+    queryset = MensagemCanal.objects.select_related('remetente', 'canal').all()
+    serializer_class = MensagemCanalSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """Filtra mensagens dos canais que o usuário tem acesso"""
+        user = self.request.user
+
+        if user.role in ['SUPERUSER', 'GESTOR']:
+            return self.queryset
+
+        # Mensagens dos canais onde participa ou pode ver
+        canais_visiveis = CanalComunicacao.objects.filter(
+            Q(participantes__usuario=user) |
+            Q(visivel_para_coordenacao=True, turma__coordenador=user)
+        ).distinct().values_list('id', flat=True)
+
+        return self.queryset.filter(canal_id__in=canais_visiveis, excluida=False)
+
+    @action(detail=True, methods=['put'])
+    def editar(self, request, pk=None):
+        """Edita mensagem"""
+        mensagem = self.get_object()
+
+        if not mensagem.pode_editar(request.user):
+            return Response({
+                'success': False,
+                'message': 'Você não pode editar esta mensagem'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        novo_conteudo = request.data.get('conteudo')
+        if not novo_conteudo:
+            return Response({
+                'success': False,
+                'message': 'Conteúdo obrigatório'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        mensagem.conteudo = novo_conteudo
+        mensagem.editada = True
+        mensagem.editada_em = timezone.now()
+        mensagem.save()
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='MENSAGEM_EDITADA',
+            canal=mensagem.canal,
+            mensagem=mensagem,
+            detalhes={'conteudo_anterior': mensagem.conteudo}
+        )
+
+        return Response({
+            'success': True,
+            'mensagem': self.get_serializer(mensagem).data
+        })
+
+    @action(detail=True, methods=['delete'])
+    def excluir(self, request, pk=None):
+        """Exclui (soft delete) mensagem"""
+        mensagem = self.get_object()
+
+        if not mensagem.pode_excluir(request.user):
+            return Response({
+                'success': False,
+                'message': 'Você não pode excluir esta mensagem'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        mensagem.excluida = True
+        mensagem.excluida_em = timezone.now()
+        mensagem.save()
+
+        # Auditoria
+        AuditoriaConversa.objects.create(
+            usuario=request.user,
+            acao='MENSAGEM_EXCLUIDA',
+            canal=mensagem.canal,
+            mensagem=mensagem,
+            detalhes={'conteudo': mensagem.conteudo}
+        )
+
+        return Response({
+            'success': True,
+            'message': 'Mensagem excluída'
+        })
+
+
+class NotificacaoComunicacaoViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet para notificações"""
+    queryset = NotificacaoComunicacao.objects.select_related('canal', 'mensagem').all()
+    serializer_class = NotificacaoComunicacaoSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return self.queryset.filter(usuario=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def nao_lidas(self, request):
+        """Lista notificações não lidas"""
+        notificacoes = self.get_queryset().filter(lida=False).order_by('-criada_em')
+        serializer = self.get_serializer(notificacoes, many=True)
+
+        return Response({
+            'success': True,
+            'notificacoes': serializer.data,
+            'total': notificacoes.count()
+        })
+
+    @action(detail=True, methods=['post'])
+    def marcar_lida(self, request, pk=None):
+        """Marca notificação como lida"""
+        notificacao = self.get_object()
+        notificacao.marcar_como_lida()
+
+        return Response({
+            'success': True,
+            'message': 'Notificação marcada como lida'
+        })
+
+    @action(detail=False, methods=['post'])
+    def marcar_todas_lidas(self, request):
+        """Marca todas como lidas"""
+        self.get_queryset().filter(lida=False).update(
+            lida=True,
+            lida_em=timezone.now()
+        )
+
+        return Response({
+            'success': True,
+            'message': 'Todas as notificações foram marcadas como lidas'
+        })
+
+
+class AuditoriaConversaViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet para auditoria (apenas gestores)"""
+    queryset = AuditoriaConversa.objects.select_related('usuario', 'canal').all()
+    serializer_class = AuditoriaConversaSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if user.role not in ['SUPERUSER', 'GESTOR']:
+            return self.queryset.none()
+
+        return self.queryset.order_by('-criado_em')

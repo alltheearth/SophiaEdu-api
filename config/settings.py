@@ -2,6 +2,22 @@ import os
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
+import os
+from pathlib import Path
+from datetime import timedelta
+from decouple import Config, RepositoryEnv
+
+# =========================
+# BASE
+# =========================
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Força o carregamento do .env manualmente
+env_path = os.path.join(BASE_DIR, '.env')
+if not os.path.exists(env_path):
+    raise FileNotFoundError(f"Arquivo .env não encontrado em {env_path}")
+
+config = Config(RepositoryEnv(env_path))
 
 # =========================
 # BASE

@@ -362,3 +362,310 @@ class DashboardSerializer(serializers.Serializer):
     total_turmas = serializers.IntegerField()
     mensalidades_pendentes = serializers.DictField()
     mensalidades_atrasadas = serializers.DictField()
+
+
+# sophia/serializers.py - ADICIONAR AO ARQUIVO EXISTENTE
+
+from rest_framework import serializers
+from .models import (
+    CanalComunicacao, ParticipanteCanal, MensagemCanal,
+    AnexoMensagem, ResponsavelConversa, NotificacaoComunicacao,
+    AuditoriaConversa, Visualizacao
+)
+
+
+# ============================================
+# COMUNICAÇÃO - SERIALIZERS
+# ============================================
+
+class ParticipanteCanalSerializer(serializers.ModelSerializer):
+    """Serializer para participantes do canal"""
+    nome = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    email = serializers.EmailField(source='usuario.email', read_only=True)
+    foto = serializers.URLField(source='usuario.foto', read_only=True)
+    role = serializers.CharField(source='usuario.role', read_only=True)
+    papel_display = serializers.CharField(source='get_papel_display', read_only=True)
+
+    class Meta:
+        model = ParticipanteCanal
+        fields = [
+            'id', 'usuario', 'nome', 'email', 'foto', 'role',
+            'papel', 'papel_display', 'ativo', 'pode_enviar',
+            'notificar', 'adicionado_em', 'ultima_visualizacao'
+        ]
+        read_only_fields = ['adicionado_em', 'ultima_visualizacao']
+
+
+class AnexoMensagemSerializer(serializers.ModelSerializer):
+    """Serializer para anexos"""
+    tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
+    tamanho_mb = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AnexoMensagem
+        fields = [
+            'id', 'tipo', 'tipo_display', 'nome_arquivo', 'url',
+            'tamanho', 'tamanho_mb', 'mime_type', 'e_trabalho',
+            'atividade', 'nota_trabalho', 'feedback_professor',
+            'enviado_em', 'downloads'
+        ]
+        read_only_fields = ['enviado_em', 'downloads']
+
+    def get_tamanho_mb(self, obj):
+        """Retorna tamanho em MB"""
+        return round(obj.tamanho / (1024 * 1024), 2)
+
+
+class VisualizacaoSerializer(serializers.ModelSerializer):
+    """Serializer para visualizações"""
+    nome_usuario = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    foto_usuario = serializers.URLField(source='usuario.foto', read_only=True)
+
+    class Meta:
+        model = Visualizacao
+        fields = ['id', 'usuario', 'nome_usuario', 'foto_usuario', 'visualizada_em']
+
+
+class MensagemCanalSerializer(serializers.ModelSerializer):
+    """Serializer para mensagens"""
+    remetente_nome = serializers.CharField(source='remetente.get_full_name', read_only=True)
+    remetente_foto = serializers.URLField(source='remetente.foto', read_only=True)
+    remetente_role = serializers.CharField(source='remetente.role', read_only=True)
+    tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
+    prioridade_display = serializers.CharField(source='get_prioridade_display', read_only=True)
+
+    anexos = AnexoMensagemSerializer(many=True, read_only=True)
+    respostas = serializers.SerializerMethodField()
+    visualizacoes_detalhadas = VisualizacaoSerializer(many=True, read_only=True)
+    total_visualizacoes = serializers.IntegerField(source='visualizacoes', read_only=True)
+
+    # Info da mensagem respondida
+    respondendo_a_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MensagemCanal
+        fields = [
+            'id', 'canal', 'remetente', 'remetente_nome', 'remetente_foto',
+            'remetente_role', 'tipo', 'tipo_display', 'conteudo',
+            'prioridade', 'prioridade_display', 'respondendo_a',
+            'respondendo_a_info', 'anexos', 'respostas', 'editada',
+            'editada_em', 'excluida', 'lida', 'lida_em',
+            'visualizacoes_detalhadas', 'total_visualizacoes',
+            'requer_confirmacao', 'enviada_em'
+        ]
+        read_only_fields = ['remetente', 'enviada_em', 'editada', 'editada_em']
+
+    def get_respostas(self, obj):
+        """Retorna respostas (threads)"""
+        respostas = obj.respostas.filter(excluida=False).select_related('remetente')[:10]
+        return MensagemCanalSerializer(respostas, many=True, context=self.context).data
+
+    def get_respondendo_a_info(self, obj):
+        """Informações da mensagem respondida"""
+        if obj.respondendo_a:
+            return {
+                'id': str(obj.respondendo_a.id),
+                'remetente': obj.respondendo_a.remetente.get_full_name(),
+                'conteudo': obj.respondendo_a.conteudo[:100]
+            }
+        return None
+
+
+class ResponsavelConversaSerializer(serializers.ModelSerializer):
+    """Serializer para responsáveis de conversa"""
+    responsavel_original_nome = serializers.CharField(source='responsavel_original.get_full_name', read_only=True)
+    assumida_por_nome = serializers.CharField(source='assumida_por.get_full_name', read_only=True)
+    esta_atrasado = serializers.BooleanField(read_only=True)
+    tempo_decorrido_horas = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ResponsavelConversa
+        fields = [
+            'id', 'canal', 'responsavel_original', 'responsavel_original_nome',
+            'assumida_por', 'assumida_por_nome', 'assumida_em',
+            'motivo_assuncao', 'ativo', 'devolvida', 'devolvida_em',
+            'prazo_resposta', 'alertado', 'atrasado', 'esta_atrasado',
+            'tempo_decorrido_horas', 'criado_em', 'atualizado_em'
+        ]
+
+    def get_tempo_decorrido_horas(self, obj):
+        """Tempo decorrido desde última mensagem"""
+        if not obj.canal.ultima_mensagem_em:
+            return 0
+        from django.utils import timezone
+        delta = timezone.now() - obj.canal.ultima_mensagem_em
+        return round(delta.total_seconds() / 3600, 1)
+
+
+class CanalComunicacaoListSerializer(serializers.ModelSerializer):
+    """Serializer simplificado para lista de canais"""
+    tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    total_participantes = serializers.SerializerMethodField()
+    mensagens_nao_lidas = serializers.SerializerMethodField()
+    ultima_mensagem = serializers.SerializerMethodField()
+    meu_papel = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CanalComunicacao
+        fields = [
+            'id', 'tipo', 'tipo_display', 'nome', 'descricao',
+            'status', 'status_display', 'fixado', 'total_participantes',
+            'mensagens_nao_lidas', 'ultima_mensagem', 'ultima_mensagem_em',
+            'meu_papel', 'criado_em'
+        ]
+
+    def get_total_participantes(self, obj):
+        return obj.participantes.filter(ativo=True).count()
+
+    def get_mensagens_nao_lidas(self, obj):
+        usuario = self.context['request'].user
+        return obj.obter_nao_lidas(usuario)
+
+    def get_ultima_mensagem(self, obj):
+        """Última mensagem do canal"""
+        ultima = obj.mensagens.filter(excluida=False).select_related('remetente').last()
+        if ultima:
+            return {
+                'id': str(ultima.id),
+                'remetente': ultima.remetente.get_full_name(),
+                'conteudo': ultima.conteudo[:100],
+                'enviada_em': ultima.enviada_em
+            }
+        return None
+
+    def get_meu_papel(self, obj):
+        """Papel do usuário atual no canal"""
+        usuario = self.context['request'].user
+        participante = obj.participantes.filter(usuario=usuario).first()
+        return participante.get_papel_display() if participante else None
+
+
+class CanalComunicacaoSerializer(serializers.ModelSerializer):
+    """Serializer completo para canal"""
+    tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    criado_por_nome = serializers.CharField(source='criado_por.get_full_name', read_only=True)
+    turma_nome = serializers.CharField(source='turma.nome', read_only=True)
+    disciplina_nome = serializers.CharField(source='disciplina.nome', read_only=True)
+
+    participantes = ParticipanteCanalSerializer(many=True, read_only=True)
+    responsaveis = ResponsavelConversaSerializer(many=True, read_only=True)
+    mensagens_recentes = serializers.SerializerMethodField()
+    estatisticas = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CanalComunicacao
+        fields = [
+            'id', 'escola', 'tipo', 'tipo_display', 'nome', 'descricao',
+            'turma', 'turma_nome', 'disciplina', 'disciplina_nome',
+            'criado_por', 'criado_por_nome', 'status', 'status_display',
+            'visivel_para_gestao', 'visivel_para_coordenacao',
+            'permite_anexos', 'permite_entrega_trabalhos',
+            'fixado', 'participantes', 'responsaveis',
+            'mensagens_recentes', 'estatisticas',
+            'criado_em', 'atualizado_em', 'ultima_mensagem_em'
+        ]
+        read_only_fields = ['criado_por', 'criado_em', 'atualizado_em']
+
+    def get_mensagens_recentes(self, obj):
+        """Últimas 50 mensagens"""
+        mensagens = obj.mensagens.filter(excluida=False).select_related('remetente').order_by('-enviada_em')[:50]
+        return MensagemCanalSerializer(mensagens, many=True, context=self.context).data
+
+    def get_estatisticas(self, obj):
+        """Estatísticas do canal"""
+        return {
+            'total_mensagens': obj.mensagens.filter(excluida=False).count(),
+            'total_participantes': obj.participantes.filter(ativo=True).count(),
+            'total_anexos': AnexoMensagem.objects.filter(mensagem__canal=obj).count(),
+            'trabalhos_entregues': AnexoMensagem.objects.filter(
+                mensagem__canal=obj,
+                e_trabalho=True
+            ).count()
+        }
+
+
+class NotificacaoComunicacaoSerializer(serializers.ModelSerializer):
+    """Serializer para notificações"""
+    tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
+    canal_nome = serializers.CharField(source='canal.nome', read_only=True)
+
+    class Meta:
+        model = NotificacaoComunicacao
+        fields = [
+            'id', 'tipo', 'tipo_display', 'canal', 'canal_nome',
+            'mensagem', 'titulo', 'conteudo', 'lida', 'lida_em',
+            'criada_em'
+        ]
+        read_only_fields = ['criada_em']
+
+
+class AuditoriaConversaSerializer(serializers.ModelSerializer):
+    """Serializer para auditoria"""
+    usuario_nome = serializers.CharField(source='usuario.get_full_name', read_only=True)
+    acao_display = serializers.CharField(source='get_acao_display', read_only=True)
+    canal_nome = serializers.CharField(source='canal.nome', read_only=True)
+
+    class Meta:
+        model = AuditoriaConversa
+        fields = [
+            'id', 'usuario', 'usuario_nome', 'acao', 'acao_display',
+            'canal', 'canal_nome', 'mensagem', 'detalhes',
+            'ip_address', 'criado_em'
+        ]
+        read_only_fields = ['criado_em']
+
+
+# ============================================
+# SERIALIZERS PARA CRIAÇÃO
+# ============================================
+
+class CriarCanalSerializer(serializers.Serializer):
+    """Serializer para criar canal"""
+    tipo = serializers.ChoiceField(choices=CanalComunicacao.TIPO_CHOICES)
+    nome = serializers.CharField(max_length=200, required=False)
+    descricao = serializers.CharField(required=False, allow_blank=True)
+    turma = serializers.UUIDField(required=False, allow_null=True)
+    disciplina = serializers.UUIDField(required=False, allow_null=True)
+    participantes_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False
+    )
+    permite_anexos = serializers.BooleanField(default=True)
+    permite_entrega_trabalhos = serializers.BooleanField(default=False)
+    visivel_para_coordenacao = serializers.BooleanField(default=True)
+
+
+class EnviarMensagemSerializer(serializers.Serializer):
+    """Serializer para enviar mensagem"""
+    conteudo = serializers.CharField()
+    tipo = serializers.ChoiceField(
+        choices=MensagemCanal.TIPO_CHOICES,
+        default='TEXTO'
+    )
+    prioridade = serializers.ChoiceField(
+        choices=MensagemCanal.PRIORIDADE_CHOICES,
+        default='NORMAL'
+    )
+    respondendo_a = serializers.UUIDField(required=False, allow_null=True)
+    requer_confirmacao = serializers.BooleanField(default=False)
+    anexos = serializers.ListField(
+        child=serializers.JSONField(),
+        required=False
+    )
+
+
+class AdicionarParticipantesSerializer(serializers.Serializer):
+    """Serializer para adicionar participantes"""
+    usuarios_ids = serializers.ListField(child=serializers.UUIDField())
+    papel = serializers.ChoiceField(
+        choices=ParticipanteCanal.PAPEL_CHOICES,
+        default='MEMBRO'
+    )
+    notificar = serializers.BooleanField(default=True)
+
+
+class AssumirConversaSerializer(serializers.Serializer):
+    """Serializer para assumir conversa"""
+    motivo = serializers.CharField(required=False, allow_blank=True)
