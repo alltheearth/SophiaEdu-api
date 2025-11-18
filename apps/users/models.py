@@ -49,14 +49,14 @@ class User(AbstractUser):
 
     groups = models.ManyToManyField(
         'auth.Group',
-        related_name='sophia_users',  # <-- ADICIONAR
+        related_name='sophia_users',
         related_query_name='sophia_user',
         blank=True
     )
 
     user_permissions = models.ManyToManyField(
         'auth.Permission',
-        related_name='sophia_users',  # <-- ADICIONAR
+        related_name='sophia_users',
         related_query_name='sophia_user',
         blank=True
     )
