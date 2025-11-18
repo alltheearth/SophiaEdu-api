@@ -4,6 +4,8 @@ from django.conf import settings
 from django.conf.urls.static import static
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken import views as authtoken_views
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
+
 
 from sophia.views import (
     # Autenticação
@@ -124,6 +126,14 @@ urlpatterns = [
     # ============ DRF PADRÃO ============
     path('api-auth/', include('rest_framework.urls')),
     path('api-token-auth/', authtoken_views.obtain_auth_token, name='api-token-auth'),
+    # Arquivo do schema
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+
+    # Swagger UI
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
+
+    # Redoc (opcional)
+    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
 ]
 
 # ============================================

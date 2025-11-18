@@ -649,11 +649,6 @@ class Evento(models.Model):
 
 # sophia/models.py - ADICIONAR AO ARQUIVO EXISTENTE
 
-from django.db import models
-import uuid
-from django.utils import timezone
-
-
 # ============= SISTEMA DE COMUNICAÇÃO AVANÇADO =============
 
 class CanalComunicacao(models.Model):
