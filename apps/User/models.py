@@ -5,7 +5,6 @@ import uuid
 import secrets
 import string
 
-# ============= CORE =============
 class User(AbstractUser):
     """Usuário base do sistema com autenticação segura"""
 

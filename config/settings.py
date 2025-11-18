@@ -57,7 +57,7 @@ INSTALLED_APPS = [
 # =========================
 # CUSTOM USER MODEL
 # =========================
-AUTH_USER_MODEL = 'apps.User'
+AUTH_USER_MODEL = 'User.User'
 # =========================
 # MIDDLEWARE
 # =========================
@@ -70,7 +70,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'sophia.middleware.EscolaMiddleware'
 ]
 
 # =========================
