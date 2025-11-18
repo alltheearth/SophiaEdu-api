@@ -7,35 +7,6 @@ from .models import (
 )
 
 
-class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
-    @classmethod
-    def get_token(cls, user):
-        token = super().get_token(user)
-        token['role'] = user.role
-        token['nome'] = user.get_full_name()
-        token['foto'] = user.foto
-
-        # Buscar escolas do usuário
-        vinculos = user.escolas.filter(ativo=True)
-        escolas = [
-            {
-                'id': str(v.escola_id),
-                'nome': v.escola.nome,
-                'logo': v.escola.logo,
-                'role': v.role_na_escola
-            }
-            for v in vinculos.select_related('escola')
-        ]
-
-        token['escolas'] = escolas
-
-        # Escola ativa (primeira ou última usada)
-        if escolas:
-            token['escola_ativa_id'] = escolas[0]['id']
-
-        return token
-
-
 class UserSerializer(serializers.ModelSerializer):
     nome_completo = serializers.CharField(source='get_full_name', read_only=True)
 

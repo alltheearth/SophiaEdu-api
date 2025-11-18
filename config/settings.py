@@ -51,13 +51,13 @@ INSTALLED_APPS = [
     'django_filters',
 
     # Apps locais
-    'sophia',
+    'apps.User',
 ]
 
 # =========================
 # CUSTOM USER MODEL
 # =========================
-AUTH_USER_MODEL = 'sophia.User'
+AUTH_USER_MODEL = 'apps.User'
 # =========================
 # MIDDLEWARE
 # =========================

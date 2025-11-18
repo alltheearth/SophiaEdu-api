@@ -124,6 +124,7 @@ urlpatterns = [
     path('webhooks/asaas/', asaas_webhook, name='asaas-webhook'),
 
     # ============ DRF PADRÃO ============
+    path('api/User/', include('apps.User.urls')),
     path('api-auth/', include('rest_framework.urls')),
     path('api-token-auth/', authtoken_views.obtain_auth_token, name='api-token-auth'),
     # Arquivo do schema

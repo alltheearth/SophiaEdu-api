@@ -77,7 +77,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'Usuário',
                 'verbose_name_plural': 'Usuários',
-                'db_table': 'users',
+                'db_table': 'User',
                 'ordering': ['-created_at'],
             },
             managers=[

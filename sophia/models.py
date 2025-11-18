@@ -64,7 +64,7 @@ class User(AbstractUser):
     )
 
     class Meta:
-        db_table = 'users'
+        db_table = 'User'
         verbose_name = 'Usuário'
         verbose_name_plural = 'Usuários'
         ordering = ['-created_at']
