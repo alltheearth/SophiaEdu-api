@@ -1,9 +1,11 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 import uuid
 import secrets
 import string
+
 
 class User(AbstractUser):
     """Usuário base do sistema com autenticação segura"""
@@ -69,6 +71,23 @@ class User(AbstractUser):
     def __str__(self):
         return f"{self.get_full_name()} ({self.get_role_display()})"
 
+    def clean(self):
+        """Validação customizada"""
+        super().clean()
+
+        # Verifica se não é SUPERUSER e não tem escola vinculada
+        if self.role != 'SUPERUSER' and self.pk:
+            if not self.escolas.filter(ativo=True).exists():
+                raise ValidationError({
+                    'role': 'Usuários que não são SUPERUSER devem estar vinculados a pelo menos uma escola.'
+                })
+
+    def tem_escola_vinculada(self):
+        """Verifica se usuário tem pelo menos uma escola ativa vinculada"""
+        if self.role == 'SUPERUSER':
+            return True
+        return self.escolas.filter(ativo=True).exists()
+
     def esta_bloqueado(self):
         """Verifica se usuário está bloqueado por tentativas"""
         if self.bloqueado_ate and self.bloqueado_ate > timezone.now():
@@ -100,9 +119,9 @@ class User(AbstractUser):
     def pode_criar_usuario(self, role_novo_usuario):
         """Verifica se usuário tem permissão para criar outro usuário"""
         hierarquia = {
-            'SUPERUSER': ['GESTOR', 'COORDENADOR', 'PROFESSOR', 'RESPONSAVEL'],
-            'GESTOR': ['COORDENADOR', 'PROFESSOR', 'RESPONSAVEL'],
-            'COORDENADOR': ['PROFESSOR'],
+            'SUPERUSER': ['GESTOR', 'COORDENADOR', 'PROFESSOR', 'RESPONSAVEL', 'ALUNO'],
+            'GESTOR': ['COORDENADOR', 'PROFESSOR', 'RESPONSAVEL', 'ALUNO'],
+            'COORDENADOR': ['PROFESSOR', 'ALUNO'],
             'PROFESSOR': [],
             'RESPONSAVEL': [],
             'ALUNO': []
@@ -110,4 +129,6 @@ class User(AbstractUser):
 
         return role_novo_usuario in hierarquia.get(self.role, [])
 
-
+    def get_escolas_ativas(self):
+        """Retorna queryset de escolas ativas vinculadas ao usuário"""
+        return self.escolas.filter(ativo=True).select_related('escola')
