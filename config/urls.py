@@ -11,7 +11,8 @@ router = DefaultRouter()
 
 urlpatterns = [
                   path('admin/', admin.site.urls),
-                  path('api/User/', include('apps.User.urls')),
+                  path('api/users/', include('apps.User.urls')),
+                  path('api/escolas/', include('apps.Schools.urls')),
                   path('api-auth/', include('rest_framework.urls')),
                   path('api-token-auth/', authtoken_views.obtain_auth_token, name='api-token-auth'),
                   # Arquivo do schema

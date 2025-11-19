@@ -52,6 +52,7 @@ INSTALLED_APPS = [
 
     # Apps locais
     'apps.User',
+    'apps.Schools'
 ]
 
 # =========================

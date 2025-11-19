@@ -4,8 +4,10 @@ from rest_framework.routers import DefaultRouter
 
 from .views import UsuarioViewSet
 
+
 router = DefaultRouter()
-router.register(r'User', UsuarioViewSet, basename='User')
+router.register(r'', UsuarioViewSet, basename='User')
+
 
 urlpatterns = [
 
