@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # =========================
 # CUSTOM USER MODEL
 # =========================
-AUTH_USER_MODEL = 'User.User'
+AUTH_USER_MODEL = 'user.User'  # CORRIGIDO: user com 'u' minúsculo
 
 # =========================
 # APLICAÇÕES
@@ -34,10 +34,10 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
 
-    # Apps locais
+    # Apps locais -
     'apps.User',
     'apps.Schools',
-    'apps.authentication'
+    'apps.Authentication'
 ]
 
 # =========================

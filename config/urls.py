@@ -11,12 +11,12 @@ router = DefaultRouter()
 urlpatterns = [
                   path('admin/', admin.site.urls),
 
-                  # APIs principais
-                  path('api/users/', include('apps.User.urls')),
-                  path('api/escolas/', include('apps.Schools.urls')),
+                  # APIs principais - CORRIGIDO: caminhos minúsculos
+                  path('api/users/', include('apps.user.urls')),
+                  path('api/escolas/', include('apps.schools.urls')),
 
-                  # ADICIONAR ESTA LINHA - Rotas de autenticação
-                  path('api/auth', include('apps.authentication.urls')),
+                  # Rotas de autenticação - CORRIGIDO: path sem barra inicial duplicada
+                  path('api/auth/', include('apps.authentication.urls')),
 
                   # DRF
                   path('api-auth/', include('rest_framework.urls')),

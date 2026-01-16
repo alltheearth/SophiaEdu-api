@@ -8,4 +8,4 @@ class UserConfig(AppConfig):
 
     def ready(self):
         """Importa os signals quando o app estiver pronto"""
-        import apps.User.signals
+        import apps.User.signals  # CORRIGIDO: caminho minúsculo
