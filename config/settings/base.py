@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # =========================
 # CUSTOM USER MODEL
 # =========================
-AUTH_USER_MODEL = 'user.User'  # CORRIGIDO: user com 'u' minúsculo
+AUTH_USER_MODEL = 'User.User'
 
 # =========================
 # APLICAÇÕES
