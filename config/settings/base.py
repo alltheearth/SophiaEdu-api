@@ -35,9 +35,9 @@ INSTALLED_APPS = [
     'django_filters',
 
     # Apps locais -
-    'apps.User',
-    'apps.Schools',
-    'apps.Authentication'
+    'apps.User.apps.UserConfig',  # ← ASSIM
+    'apps.Schools.apps.SchoolsConfig',  # ← ASSIM
+    'apps.Authentication.apps.AuthenticationConfig'  # ← ASSIM
 ]
 
 # =========================
