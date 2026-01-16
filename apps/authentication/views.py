@@ -1,19 +1,21 @@
-from rest_framework import viewsets, filters, status
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 
-from ..User.models import (User)
-from ..User.serializers import (UserSerializer, UserCreateSerializer, )
+from ..User.models import User
+from ..User.serializers import UserSerializer, UserCreateSerializer
+from ..User.serializers import UserUpdateSerializer
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def registro(request):
     """Registra novo usuário"""
-    serializer = UserCreateSerializer(data=request.data)
+    serializer = UserCreateSerializer(data=request.data, context={'request': request})
 
     if serializer.is_valid():
         user = serializer.save()
@@ -53,6 +55,7 @@ def login_view(request):
             'message': 'Credenciais inválidas'
         }, status=status.HTTP_401_UNAUTHORIZED)
 
+    # Verifica se usuário está bloqueado
     if user.esta_bloqueado():
         tempo_restante = (user.bloqueado_ate - timezone.now()).seconds // 60
         return Response({
@@ -60,26 +63,57 @@ def login_view(request):
             'message': f'Usuário bloqueado. Tente novamente em {tempo_restante} minutos.'
         }, status=status.HTTP_403_FORBIDDEN)
 
+    # Verifica se usuário está ativo
     if not user.ativo:
         return Response({
             'success': False,
             'message': 'Usuário inativo'
         }, status=status.HTTP_403_FORBIDDEN)
 
+    # NOVA VALIDAÇÃO: Verifica se não-SUPERUSER tem escola vinculada
+    if user.role != 'SUPERUSER' and not user.tem_escola_vinculada():
+        return Response({
+            'success': False,
+            'message': 'Usuário não está vinculado a nenhuma escola. Contate o administrador.',
+            'erro_tipo': 'SEM_ESCOLA_VINCULADA'
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    # Autentica
     user_auth = authenticate(username=username, password=password)
 
     if user_auth:
         user.resetar_tentativas()
         user.last_login = timezone.now()
+
+        # Registra IP do último login
+        ip = request.META.get('REMOTE_ADDR')
+        if ip:
+            user.ultimo_login_ip = ip
+
         user.save()
 
         token, created = Token.objects.get_or_create(user=user)
+
+        # Busca escolas do usuário
+        escolas = []
+        if user.role != 'SUPERUSER':
+            vinculos = user.escolas.filter(ativo=True).select_related('escola')
+            escolas = [
+                {
+                    'id': str(v.escola.id),
+                    'nome': v.escola.nome,
+                    'logo': v.escola.logo,
+                    'role': v.role_na_escola
+                }
+                for v in vinculos
+            ]
 
         return Response({
             'success': True,
             'user': UserSerializer(user).data,
             'token': token.key,
-            'primeiro_acesso': user.primeiro_acesso
+            'primeiro_acesso': user.primeiro_acesso,
+            'escolas': escolas
         })
     else:
         user.registrar_tentativa_falha()
@@ -97,7 +131,7 @@ def logout_view(request):
     try:
         request.user.auth_token.delete()
         return Response({'success': True, 'message': 'Logout realizado'})
-    except:
+    except Exception:
         return Response({'success': False}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -108,6 +142,22 @@ def perfil_usuario(request):
     user = request.user
     data = UserSerializer(user).data
 
+    # Adiciona informações de escolas
+    if user.role != 'SUPERUSER':
+        vinculos = user.escolas.filter(ativo=True).select_related('escola')
+        data['escolas'] = [
+            {
+                'id': str(v.escola.id),
+                'nome': v.escola.nome,
+                'logo': v.escola.logo,
+                'cnpj': v.escola.cnpj,
+                'role': v.role_na_escola,
+                'data_vinculo': v.data_vinculo
+            }
+            for v in vinculos
+        ]
+
+    # Adiciona informações específicas por role
     if user.role == 'ALUNO' and hasattr(user, 'aluno_profile'):
         data['aluno'] = {
             'matricula': user.aluno_profile.matricula,
@@ -131,7 +181,8 @@ def perfil_usuario(request):
 @permission_classes([IsAuthenticated])
 def atualizar_perfil(request):
     """Atualiza perfil do usuário"""
-    serializer = UserSerializer(request.user, data=request.data, partial=True)
+
+    serializer = UserUpdateSerializer(request.user, data=request.data, partial=True)
 
     if serializer.is_valid():
         serializer.save()
@@ -139,4 +190,3 @@ def atualizar_perfil(request):
 
     return Response({'success': False, 'errors': serializer.errors},
                     status=status.HTTP_400_BAD_REQUEST)
-
